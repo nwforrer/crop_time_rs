@@ -4,6 +4,9 @@ use bevy::{
 };
 use rand::distributions::{Distribution, Uniform};
 
+const SCALE: f32 = 3.0;
+const TILE_SIZE: f32 = SCALE * 16.0;
+
 pub struct GamePlugin;
 
 #[derive(Component)]
@@ -17,6 +20,12 @@ struct Growable {
 
 #[derive(Component)]
 struct Animation;
+
+#[derive(Component)]
+struct Highlight {
+    target: Vec3,
+    offset: Vec3,
+}
 
 #[derive(Default)]
 struct TextureHandles{
@@ -33,6 +42,8 @@ impl Plugin for GamePlugin {
             .add_startup_system(setup_crop_textures)
             .add_system(animate_sprite_system)
             .add_system(grow_system)
+            .add_system(highlight_system)
+            .add_system(plant_crop_system)
             .add_system_set(
                 SystemSet::new()
                     .with_run_criteria(FixedTimestep::step(TIME_STEP as f64))
@@ -97,11 +108,42 @@ fn action_pressed(name: &str, keyboard_input: &Res<Input<KeyCode>>) -> bool {
     }
 }
 
-fn player_movement_system(
+fn highlight_system(
+    mut query: Query<(&mut Transform, &Highlight)>,
+) {
+    let (mut transform, highlight) = query.single_mut();
+    transform.translation = pixel_to_tile_coord(highlight.target + highlight.offset);
+}
+
+fn plant_crop_system(
     mut commands: Commands, 
     texture_handles: Res<TextureHandles>,
     keyboard_input: Res<Input<KeyCode>>,
+    query: Query<&Transform, With<Highlight>>,
+) {
+    let transform = query.single();
+    if keyboard_input.just_pressed(KeyCode::Return) {
+        commands.spawn_bundle(SpriteSheetBundle {
+            texture_atlas: texture_handles.crops.to_owned(),
+            transform: Transform {
+                translation: transform.translation,
+                scale: Vec3::splat(SCALE),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .insert(Growable {
+            growth_state: 0,
+            max_growth_state: 2,
+        })
+        .insert(Timer::from_seconds(1.0, true));
+    }
+}
+
+fn player_movement_system(
+    keyboard_input: Res<Input<KeyCode>>,
     mut query: Query<(&Player, &mut Transform)>,
+    mut hq: Query<&mut Highlight>,
 ) {
     let (_player, mut transform) = query.single_mut();
     let mut direction = Vec3::ZERO;
@@ -121,22 +163,9 @@ fn player_movement_system(
     let translation = &mut transform.translation;
     *translation = *translation + direction.normalize_or_zero() * 250.0 * TIME_STEP;
 
-    if keyboard_input.just_pressed(KeyCode::Return) {
-        commands.spawn_bundle(SpriteSheetBundle {
-            texture_atlas: texture_handles.crops.to_owned(),
-            transform: Transform {
-                translation: *translation,
-                scale: Vec3::splat(3.0),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .insert(Growable {
-            growth_state: 0,
-            max_growth_state: 2,
-        })
-        .insert(Timer::from_seconds(5.0, true));
-    }
+    let mut highlight = hq.single_mut();
+    highlight.target = *translation;
+    highlight.target.y += TILE_SIZE/2.0;
 }
 
 fn setup_player(
@@ -147,13 +176,14 @@ fn setup_player(
     let player_texture_handle = asset_server.load("player.png");
     let player_texture_atlas = TextureAtlas::from_grid(player_texture_handle, Vec2::new(32.0, 32.0), 4, 1);
     let player_texture_atlas_handle = texture_atlases.add(player_texture_atlas);
+    let player_size = 32.0;
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
     commands
         .spawn_bundle(SpriteSheetBundle {
             texture_atlas: player_texture_atlas_handle,
             transform: Transform {
                 translation: Vec3::new(0.0, 0.0, 1.0),
-                scale: Vec3::splat(3.0),
+                scale: Vec3::splat(SCALE),
                 ..Default::default()
             },
             ..Default::default()
@@ -161,6 +191,19 @@ fn setup_player(
         .insert(Timer::from_seconds(0.1, true))
         .insert(Animation)
         .insert(Player);
+    commands
+        .spawn_bundle(SpriteBundle {
+            texture: asset_server.load("highlight.png"),
+            transform: Transform {
+                scale: Vec3::splat(SCALE),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .insert(Highlight {
+            target: Vec3::splat(0.0),
+            offset: Vec3::new(-player_size/2.0 * SCALE, 0.0, 0.0),
+        });
 }
 
 fn setup_crop_textures(
@@ -187,17 +230,15 @@ fn setup_tiles(
 
     let window = get_primary_window_size(windows);
 
-    let scale = 3.0;
-    let tile_size = scale * 16.0;
-    let columns = (window.x / tile_size) as i32 + 2;
-    let rows = (window.y / tile_size) as i32 + 2;
+    let columns = (window.x / TILE_SIZE) as i32 + 2;
+    let rows = (window.y / TILE_SIZE) as i32 + 2;
     let between = Uniform::from(0..100);
     let mut rng = rand::thread_rng();
     for row in 0..rows {
         for column in 0..columns {
             let position = Vec3::new(
-                column as f32 * tile_size - window.x / 2.0,
-                row as f32 * tile_size - window.y / 2.0,
+                column as f32 * TILE_SIZE - window.x / 2.0,
+                row as f32 * TILE_SIZE - window.y / 2.0,
                 0.0,
             );
             let sprite_id = between.sample(&mut rng);
@@ -214,7 +255,7 @@ fn setup_tiles(
                     texture_atlas: tiles_texture_atlas_handle.to_owned(),
                     transform: Transform {
                         translation: position,
-                        scale: Vec3::splat(scale),
+                        scale: Vec3::splat(SCALE),
                         ..Default::default()
                     },
                     sprite: TextureAtlasSprite {
@@ -231,6 +272,12 @@ fn get_primary_window_size(windows: Res<Windows>) -> Vec2 {
     let window = windows.get_primary().unwrap();
     let window = Vec2::new(window.width() as f32, window.height() as f32);
     window
+}
+
+fn pixel_to_tile_coord(pos: Vec3) -> Vec3 {
+    let tile = pos / TILE_SIZE;
+    let tile_pos = tile.floor() * TILE_SIZE;
+    return Vec3::new(tile_pos.x, tile_pos.y, pos.z);
 }
 
 fn main() {
