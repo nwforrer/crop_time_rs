@@ -13,6 +13,9 @@ pub struct GamePlugin;
 #[derive(Component)]
 struct Player;
 
+#[derive(Component)]
+struct Crop;
+
 #[derive(Component, Debug)]
 struct Growable {
     growth_state: u32,
@@ -124,6 +127,7 @@ fn update_highlight_system(
     highlight.target = transform.translation;
     highlight.target.y += PLAYER_SIZE/4.0;
     highlight.target.x += PLAYER_SIZE/4.0;
+    highlight.target.z = 1.0;
     highlight.flip_x = sprite.flip_x;
 }
 
@@ -144,23 +148,37 @@ fn plant_crop_system(
     texture_handles: Res<TextureHandles>,
     keyboard_input: Res<Input<KeyCode>>,
     query: Query<&Transform, With<Highlight>>,
+    cq: Query<&Transform, With<Crop>>,
 ) {
     let transform = query.single();
     if keyboard_input.just_pressed(KeyCode::Return) {
-        commands.spawn_bundle(SpriteSheetBundle {
-            texture_atlas: texture_handles.crops.to_owned(),
-            transform: Transform {
-                translation: transform.translation,
-                scale: Vec3::splat(SCALE),
+        let mut free_slot = true;
+        for crop in cq.iter() {
+            let crop = Vec3::new(crop.translation.x, crop.translation.y, 0.0);
+            let new_crop = Vec3::new(transform.translation.x, transform.translation.y, 0.0);
+            if crop == new_crop {
+                free_slot = false;
+                break;
+            }
+        }
+
+        if free_slot {
+            commands.spawn_bundle(SpriteSheetBundle {
+                texture_atlas: texture_handles.crops.to_owned(),
+                transform: Transform {
+                    translation: transform.translation,
+                    scale: Vec3::splat(SCALE),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        })
-        .insert(Growable {
-            growth_state: 0,
-            max_growth_state: 2,
-        })
-        .insert(Timer::from_seconds(1.0, true));
+            })
+            .insert(Growable {
+                growth_state: 0,
+                max_growth_state: 2,
+            })
+            .insert(Crop)
+            .insert(Timer::from_seconds(5.0, true));
+        }
     }
 }
 
@@ -205,7 +223,7 @@ fn setup_player(
         .spawn_bundle(SpriteSheetBundle {
             texture_atlas: player_texture_atlas_handle,
             transform: Transform {
-                translation: Vec3::new(0.0, 0.0, 1.0),
+                translation: Vec3::new(0.0, 0.0, 5.0),
                 scale: Vec3::splat(SCALE),
                 ..Default::default()
             },
