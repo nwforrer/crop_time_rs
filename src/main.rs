@@ -6,6 +6,7 @@ use rand::distributions::{Distribution, Uniform};
 
 const SCALE: f32 = 3.0;
 const TILE_SIZE: f32 = SCALE * 16.0;
+const PLAYER_SIZE: f32 = SCALE * 32.0;
 
 pub struct GamePlugin;
 
@@ -19,12 +20,13 @@ struct Growable {
 }
 
 #[derive(Component)]
-struct Animation;
+struct Animation(bool);
 
 #[derive(Component)]
 struct Highlight {
     target: Vec3,
     offset: Vec3,
+    flip_x: bool,
 }
 
 #[derive(Default)]
@@ -42,6 +44,7 @@ impl Plugin for GamePlugin {
             .add_startup_system(setup_crop_textures)
             .add_system(animate_sprite_system)
             .add_system(grow_system)
+            .add_system(update_highlight_system)
             .add_system(highlight_system)
             .add_system(plant_crop_system)
             .add_system_set(
@@ -55,13 +58,17 @@ impl Plugin for GamePlugin {
 fn animate_sprite_system(
     time: Res<Time>,
     texture_atlases: Res<Assets<TextureAtlas>>,
-    mut query: Query<(&mut Timer, &mut TextureAtlasSprite, &Handle<TextureAtlas>), With<Animation>>,
+    mut query: Query<(&mut Timer, &mut TextureAtlasSprite, &Handle<TextureAtlas>, &Animation)>,
 ) {
-    for (mut timer, mut sprite, texture_atlas_handle) in query.iter_mut() {
+    for (mut timer, mut sprite, texture_atlas_handle, animation) in query.iter_mut() {
         timer.tick(time.delta());
         if timer.finished() {
-            let texture_atlas = texture_atlases.get(texture_atlas_handle).unwrap();
-            sprite.index = (sprite.index + 1) % texture_atlas.textures.len();
+            if animation.0 {
+                let texture_atlas = texture_atlases.get(texture_atlas_handle).unwrap();
+                sprite.index = (sprite.index + 1) % texture_atlas.textures.len();
+            } else {
+                sprite.index = 0;
+            }
         }
     }
 }
@@ -108,11 +115,28 @@ fn action_pressed(name: &str, keyboard_input: &Res<Input<KeyCode>>) -> bool {
     }
 }
 
+fn update_highlight_system(
+    query: Query<(&TextureAtlasSprite, &Transform), With<Player>>,
+    mut hq: Query<&mut Highlight>,
+) {
+    let (sprite, transform) = query.single();
+    let mut highlight = hq.single_mut();
+    highlight.target = transform.translation;
+    highlight.target.y += PLAYER_SIZE/4.0;
+    highlight.target.x += PLAYER_SIZE/4.0;
+    highlight.flip_x = sprite.flip_x;
+}
+
 fn highlight_system(
     mut query: Query<(&mut Transform, &Highlight)>,
 ) {
     let (mut transform, highlight) = query.single_mut();
-    transform.translation = pixel_to_tile_coord(highlight.target + highlight.offset);
+    let flip = if highlight.flip_x {
+        -1.0
+    } else {
+        1.0
+    };
+    transform.translation = pixel_to_tile_coord(highlight.target + flip * highlight.offset);
 }
 
 fn plant_crop_system(
@@ -142,16 +166,17 @@ fn plant_crop_system(
 
 fn player_movement_system(
     keyboard_input: Res<Input<KeyCode>>,
-    mut query: Query<(&Player, &mut Transform)>,
-    mut hq: Query<&mut Highlight>,
+    mut query: Query<(&mut Transform, &mut TextureAtlasSprite, &mut Animation), With<Player>>,
 ) {
-    let (_player, mut transform) = query.single_mut();
+    let (mut transform, mut sprite, mut animation) = query.single_mut();
     let mut direction = Vec3::ZERO;
     if action_pressed("move_left", &keyboard_input) {
         direction.x -= 1.0;
+        sprite.flip_x = false;
     }
     if action_pressed("move_right", &keyboard_input) {
         direction.x += 1.0;
+        sprite.flip_x = true;
     }
     if action_pressed("move_up", &keyboard_input) {
         direction.y += 1.0;
@@ -160,12 +185,10 @@ fn player_movement_system(
         direction.y -= 1.0;
     }
 
+    animation.0 = direction.length() > 0.1;
+
     let translation = &mut transform.translation;
     *translation = *translation + direction.normalize_or_zero() * 250.0 * TIME_STEP;
-
-    let mut highlight = hq.single_mut();
-    highlight.target = *translation;
-    highlight.target.y += TILE_SIZE/2.0;
 }
 
 fn setup_player(
@@ -189,7 +212,7 @@ fn setup_player(
             ..Default::default()
         })
         .insert(Timer::from_seconds(0.1, true))
-        .insert(Animation)
+        .insert(Animation(false))
         .insert(Player);
     commands
         .spawn_bundle(SpriteBundle {
@@ -203,6 +226,7 @@ fn setup_player(
         .insert(Highlight {
             target: Vec3::splat(0.0),
             offset: Vec3::new(-player_size/2.0 * SCALE, 0.0, 0.0),
+            flip_x: false,
         });
 }
 
