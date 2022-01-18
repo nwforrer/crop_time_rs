@@ -1,6 +1,7 @@
 use bevy::{
     core::FixedTimestep,
     prelude::*,
+    sprite::collide_aabb::collide,
 };
 use rand::distributions::{Distribution, Uniform};
 
@@ -10,11 +11,23 @@ const PLAYER_SIZE: f32 = SCALE * 32.0;
 
 pub struct GamePlugin;
 
+enum CollisionLayer {
+    Environment,
+    Characters,
+    Tools,
+}
+
 #[derive(Component)]
 struct Player;
 
 #[derive(Component)]
 struct Crop;
+
+#[derive(Component)]
+struct CollisionConfig {
+    layer: u32,
+    mask: u32,
+}
 
 #[derive(Component, Debug)]
 struct Growable {
@@ -26,11 +39,15 @@ struct Growable {
 struct Animation(bool);
 
 #[derive(Component)]
-struct Highlight {
+struct FollowTarget {
     target: Vec3,
     offset: Vec3,
     flip_x: bool,
+    grid_snap: bool,
 }
+
+#[derive(Component)]
+struct Highlight;
 
 #[derive(Default)]
 struct TextureHandles{
@@ -47,9 +64,10 @@ impl Plugin for GamePlugin {
             .add_startup_system(setup_crop_textures)
             .add_system(animate_sprite_system)
             .add_system(grow_system)
-            .add_system(update_highlight_system)
-            .add_system(highlight_system)
+            .add_system(update_follow_system)
+            .add_system(follow_system)
             .add_system(plant_crop_system)
+            .add_system(pickup_system)
             .add_system_set(
                 SystemSet::new()
                     .with_run_criteria(FixedTimestep::step(TIME_STEP as f64))
@@ -118,29 +136,37 @@ fn action_pressed(name: &str, keyboard_input: &Res<Input<KeyCode>>) -> bool {
     }
 }
 
-fn update_highlight_system(
+fn update_follow_system(
     query: Query<(&TextureAtlasSprite, &Transform), With<Player>>,
-    mut hq: Query<&mut Highlight>,
+    mut fq: Query<&mut FollowTarget>,
 ) {
     let (sprite, transform) = query.single();
-    let mut highlight = hq.single_mut();
-    highlight.target = transform.translation;
-    highlight.target.y += PLAYER_SIZE/4.0;
-    highlight.target.x += PLAYER_SIZE/4.0;
-    highlight.target.z = 1.0;
-    highlight.flip_x = sprite.flip_x;
+    for mut follow in fq.iter_mut() {
+        follow.target = transform.translation;
+        follow.target.y += PLAYER_SIZE/4.0;
+        follow.target.x += PLAYER_SIZE/4.0;
+        follow.target.z = 1.0;
+        follow.flip_x = sprite.flip_x;
+    }
 }
 
-fn highlight_system(
-    mut query: Query<(&mut Transform, &Highlight)>,
+fn follow_system(
+    mut query: Query<(&mut Transform, &FollowTarget)>,
 ) {
-    let (mut transform, highlight) = query.single_mut();
-    let flip = if highlight.flip_x {
-        -1.0
-    } else {
-        1.0
-    };
-    transform.translation = pixel_to_tile_coord(highlight.target + flip * highlight.offset);
+    for (mut transform, follow) in query.iter_mut() {
+        let flip = if follow.flip_x {
+            -1.0
+        } else {
+            1.0
+        };
+        let offset = Vec3::new(flip * follow.offset.x, follow.offset.y, follow.offset.z);
+        let pos = follow.target + offset;
+        if follow.grid_snap {
+            transform.translation = pixel_to_tile_coord(pos);
+        } else {
+            transform.translation = pos;
+        }
+    }
 }
 
 fn plant_crop_system(
@@ -178,6 +204,41 @@ fn plant_crop_system(
             })
             .insert(Crop)
             .insert(Timer::from_seconds(5.0, true));
+        }
+    }
+}
+
+fn pickup_system(
+    mut commands: Commands,
+    keyboard_input: Res<Input<KeyCode>>,
+    player_query: Query<(&Transform, &CollisionConfig), With<Player>>,
+    col_query: Query<(Entity, &Transform, &CollisionConfig), Without<FollowTarget>>,
+    tool_query: Query<Entity, (With<FollowTarget>, Without<Highlight>)>,
+) {
+    if keyboard_input.just_pressed(KeyCode::E) {
+        let (player_transform, player_col_config) = player_query.single();
+        for (entity, transform, collision_config) in col_query.iter() {
+            let collision = collide(
+                player_transform.translation,
+                Vec2::splat(PLAYER_SIZE),
+                transform.translation,
+                Vec2::splat(TILE_SIZE),
+            );
+            if let Some(_) = collision {
+                if collision_config.layer & player_col_config.mask != 0 {
+                    if collision_config.layer & CollisionLayer::Tools as u32 != 0 {
+                        for active_tool in tool_query.iter() {
+                            commands.entity(active_tool).remove::<FollowTarget>();
+                        }
+                        commands.entity(entity).insert(FollowTarget {
+                            target: transform.translation,
+                            offset: Vec3::new(-TILE_SIZE/2.0 * SCALE, -TILE_SIZE/2.0, 0.0),
+                            flip_x: false,
+                            grid_snap: false,
+                        });
+                    }
+                }
+            }
         }
     }
 }
@@ -231,6 +292,10 @@ fn setup_player(
         })
         .insert(Timer::from_seconds(0.1, true))
         .insert(Animation(false))
+        .insert(CollisionConfig {
+            layer: CollisionLayer::Characters as u32,
+            mask: CollisionLayer::Environment as u32 | CollisionLayer::Tools as u32,
+        })
         .insert(Player);
     commands
         .spawn_bundle(SpriteBundle {
@@ -241,10 +306,42 @@ fn setup_player(
             },
             ..Default::default()
         })
-        .insert(Highlight {
+        .insert(FollowTarget {
             target: Vec3::splat(0.0),
             offset: Vec3::new(-player_size/2.0 * SCALE, 0.0, 0.0),
             flip_x: false,
+            grid_snap: true,
+        })
+        .insert(Highlight);
+
+    commands
+        .spawn_bundle(SpriteBundle {
+            texture: asset_server.load("flower_seed_bag.png"),
+            transform: Transform {
+                scale: Vec3::splat(SCALE),
+                translation: Vec3::new(-200.0, 0.0, 1.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .insert(CollisionConfig {
+            layer: CollisionLayer::Tools as u32,
+            mask: 0,
+        });
+
+    commands
+        .spawn_bundle(SpriteBundle {
+            texture: asset_server.load("watering_can.png"),
+            transform: Transform {
+                scale: Vec3::splat(SCALE),
+                translation: Vec3::new(200.0, 0.0, 1.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .insert(CollisionConfig {
+            layer: CollisionLayer::Tools as u32,
+            mask: 0,
         });
 }
 
