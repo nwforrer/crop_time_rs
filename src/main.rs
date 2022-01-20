@@ -1,8 +1,4 @@
-use bevy::{
-    core::FixedTimestep,
-    prelude::*,
-    sprite::collide_aabb::collide,
-};
+use bevy::{core::FixedTimestep, prelude::*, sprite::collide_aabb::collide};
 use rand::distributions::{Distribution, Uniform};
 
 const SCALE: f32 = 3.0;
@@ -36,6 +32,9 @@ struct Growable {
 }
 
 #[derive(Component)]
+struct Hydration(f32);
+
+#[derive(Component)]
 struct Animation(bool);
 
 #[derive(Component)]
@@ -47,39 +46,51 @@ struct FollowTarget {
 }
 
 #[derive(Component)]
+struct PlantSeedTool; // TODO: seed type
+
+#[derive(Component)]
+struct WaterPlantTool; // TODO: water amount (for upgraded watering can)
+
+#[derive(Component)]
 struct Highlight;
 
 #[derive(Default)]
-struct TextureHandles{
+struct TextureHandles {
     crops: Handle<TextureAtlas>,
 }
 
 const TIME_STEP: f32 = 1.0 / 60.0;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app
-            .insert_resource(TextureHandles { ..Default::default() })
-            .add_startup_system(setup_player)
-            .add_startup_system(setup_tiles)
-            .add_startup_system(setup_crop_textures)
-            .add_system(animate_sprite_system)
-            .add_system(grow_system)
-            .add_system(update_follow_system)
-            .add_system(follow_system)
-            .add_system(plant_crop_system)
-            .add_system(pickup_system)
-            .add_system_set(
-                SystemSet::new()
-                    .with_run_criteria(FixedTimestep::step(TIME_STEP as f64))
-                    .with_system(player_movement_system)
-            );
+        app.insert_resource(TextureHandles {
+            ..Default::default()
+        })
+        .add_startup_system(setup_player)
+        .add_startup_system(setup_tiles)
+        .add_startup_system(setup_crop_textures)
+        .add_system(animate_sprite_system)
+        .add_system(grow_system)
+        .add_system(update_follow_system)
+        .add_system(follow_system)
+        .add_system(use_tool_system)
+        .add_system(pickup_system)
+        .add_system_set(
+            SystemSet::new()
+                .with_run_criteria(FixedTimestep::step(TIME_STEP as f64))
+                .with_system(player_movement_system),
+        );
     }
 }
 
 fn animate_sprite_system(
     time: Res<Time>,
     texture_atlases: Res<Assets<TextureAtlas>>,
-    mut query: Query<(&mut Timer, &mut TextureAtlasSprite, &Handle<TextureAtlas>, &Animation)>,
+    mut query: Query<(
+        &mut Timer,
+        &mut TextureAtlasSprite,
+        &Handle<TextureAtlas>,
+        &Animation,
+    )>,
 ) {
     for (mut timer, mut sprite, texture_atlas_handle, animation) in query.iter_mut() {
         timer.tick(time.delta());
@@ -96,17 +107,24 @@ fn animate_sprite_system(
 
 fn grow_system(
     time: Res<Time>,
-    mut commands: Commands,
-    mut query: Query<(Entity, &mut Timer, &mut TextureAtlasSprite, &mut Growable)>,
+    //mut commands: Commands,
+    mut query: Query<(
+        Entity,
+        &mut Timer,
+        &mut TextureAtlasSprite,
+        &mut Growable,
+        &mut Hydration,
+    )>,
 ) {
-    for (entity, mut timer, mut sprite, mut growable) in query.iter_mut() {
+    for (_entity, mut timer, mut sprite, mut growable, mut hydration) in query.iter_mut() {
         timer.tick(time.delta());
         if timer.finished() {
-            if growable.growth_state < growable.max_growth_state {
+            if growable.growth_state < growable.max_growth_state && hydration.0 >= 1.0 {
                 growable.growth_state += 1;
                 sprite.index = growable.growth_state as usize;
-            } else {
-                commands.entity(entity).remove::<Growable>();
+                hydration.0 = 0.0;
+                //} else {
+                //    commands.entity(entity).remove::<Growable>();
             }
         }
     }
@@ -114,25 +132,13 @@ fn grow_system(
 
 fn action_pressed(name: &str, keyboard_input: &Res<Input<KeyCode>>) -> bool {
     match name {
-        "move_left" => {
-            keyboard_input.pressed(KeyCode::Left) || 
-            keyboard_input.pressed(KeyCode::A)
-        },
+        "move_left" => keyboard_input.pressed(KeyCode::Left) || keyboard_input.pressed(KeyCode::A),
         "move_right" => {
-            keyboard_input.pressed(KeyCode::Right) || 
-            keyboard_input.pressed(KeyCode::D)
-        },
-        "move_up" => {
-            keyboard_input.pressed(KeyCode::Up) || 
-            keyboard_input.pressed(KeyCode::W)
-        },
-        "move_down" => {
-            keyboard_input.pressed(KeyCode::Down) || 
-            keyboard_input.pressed(KeyCode::S)
-        },
-        _ => {
-            false
-        },
+            keyboard_input.pressed(KeyCode::Right) || keyboard_input.pressed(KeyCode::D)
+        }
+        "move_up" => keyboard_input.pressed(KeyCode::Up) || keyboard_input.pressed(KeyCode::W),
+        "move_down" => keyboard_input.pressed(KeyCode::Down) || keyboard_input.pressed(KeyCode::S),
+        _ => false,
     }
 }
 
@@ -143,23 +149,21 @@ fn update_follow_system(
     let (sprite, transform) = query.single();
     for mut follow in fq.iter_mut() {
         follow.target = transform.translation;
-        follow.target.y += PLAYER_SIZE/4.0;
-        follow.target.x += PLAYER_SIZE/4.0;
+        follow.target.y += PLAYER_SIZE / 4.0;
+        follow.target.x += PLAYER_SIZE / 4.0;
         follow.target.z = 1.0;
         follow.flip_x = sprite.flip_x;
     }
 }
 
-fn follow_system(
-    mut query: Query<(&mut Transform, &FollowTarget)>,
-) {
+fn follow_system(mut query: Query<(&mut Transform, &FollowTarget)>) {
     for (mut transform, follow) in query.iter_mut() {
-        let flip = if follow.flip_x {
-            -1.0
-        } else {
-            1.0
-        };
-        let offset = Vec3::new(flip * follow.offset.x, follow.offset.y, follow.offset.z);
+        let flip = if follow.flip_x { -1.0 } else { 1.0 };
+        let offset = Vec3::new(
+            flip * follow.offset.x - TILE_SIZE / 2.0,
+            follow.offset.y,
+            follow.offset.z,
+        );
         let pos = follow.target + offset;
         if follow.grid_snap {
             transform.translation = pixel_to_tile_coord(pos);
@@ -169,41 +173,61 @@ fn follow_system(
     }
 }
 
-fn plant_crop_system(
-    mut commands: Commands, 
+fn use_tool_system(
+    mut commands: Commands,
     texture_handles: Res<TextureHandles>,
     keyboard_input: Res<Input<KeyCode>>,
     query: Query<&Transform, With<Highlight>>,
-    cq: Query<&Transform, With<Crop>>,
+    tool_query: Query<(Option<&WaterPlantTool>, Option<&PlantSeedTool>), With<FollowTarget>>,
+    mut cq: Query<(&Transform, &mut Hydration), With<Crop>>,
 ) {
-    let transform = query.single();
-    if keyboard_input.just_pressed(KeyCode::Return) {
-        let mut free_slot = true;
-        for crop in cq.iter() {
-            let crop = Vec3::new(crop.translation.x, crop.translation.y, 0.0);
-            let new_crop = Vec3::new(transform.translation.x, transform.translation.y, 0.0);
-            if crop == new_crop {
-                free_slot = false;
-                break;
+    for (water_tool, plant_tool) in tool_query.iter() {
+        if plant_tool.is_some() {
+            let transform = query.single();
+            if keyboard_input.just_pressed(KeyCode::Return) {
+                let mut free_slot = true;
+                for (crop_tf, _) in cq.iter() {
+                    let crop = Vec3::new(crop_tf.translation.x, crop_tf.translation.y, 0.0);
+                    let new_crop = Vec3::new(transform.translation.x, transform.translation.y, 0.0);
+                    if crop == new_crop {
+                        free_slot = false;
+                        break;
+                    }
+                }
+
+                if free_slot {
+                    commands
+                        .spawn_bundle(SpriteSheetBundle {
+                            texture_atlas: texture_handles.crops.to_owned(),
+                            transform: Transform {
+                                translation: transform.translation,
+                                scale: Vec3::splat(SCALE),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        })
+                        .insert(Growable {
+                            growth_state: 0,
+                            max_growth_state: 2,
+                        })
+                        .insert(Hydration(0.0))
+                        .insert(Crop)
+                        .insert(Timer::from_seconds(5.0, true));
+                }
             }
         }
 
-        if free_slot {
-            commands.spawn_bundle(SpriteSheetBundle {
-                texture_atlas: texture_handles.crops.to_owned(),
-                transform: Transform {
-                    translation: transform.translation,
-                    scale: Vec3::splat(SCALE),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .insert(Growable {
-                growth_state: 0,
-                max_growth_state: 2,
-            })
-            .insert(Crop)
-            .insert(Timer::from_seconds(5.0, true));
+        if water_tool.is_some() {
+            if keyboard_input.just_pressed(KeyCode::Return) {
+                let transform = query.single();
+                for (crop_tf, mut hydration) in cq.iter_mut() {
+                    let crop = Vec3::new(crop_tf.translation.x, crop_tf.translation.y, 0.0);
+                    let new_crop = Vec3::new(transform.translation.x, transform.translation.y, 0.0);
+                    if crop == new_crop {
+                        hydration.0 = 1.0;
+                    }
+                }
+            }
         }
     }
 }
@@ -224,20 +248,19 @@ fn pickup_system(
                 transform.translation,
                 Vec2::splat(TILE_SIZE),
             );
-            if let Some(_) = collision {
-                if collision_config.layer & player_col_config.mask != 0 {
-                    if collision_config.layer & CollisionLayer::Tools as u32 != 0 {
-                        for active_tool in tool_query.iter() {
-                            commands.entity(active_tool).remove::<FollowTarget>();
-                        }
-                        commands.entity(entity).insert(FollowTarget {
-                            target: transform.translation,
-                            offset: Vec3::new(-TILE_SIZE/2.0 * SCALE, -TILE_SIZE/2.0, 0.0),
-                            flip_x: false,
-                            grid_snap: false,
-                        });
-                    }
+            if collision.is_some()
+                && collision_config.layer & player_col_config.mask != 0
+                && collision_config.layer & CollisionLayer::Tools as u32 != 0
+            {
+                for active_tool in tool_query.iter() {
+                    commands.entity(active_tool).remove::<FollowTarget>();
                 }
+                commands.entity(entity).insert(FollowTarget {
+                    target: transform.translation,
+                    offset: Vec3::new(-TILE_SIZE / 3.0 * SCALE, -TILE_SIZE / 2.0, 0.0),
+                    flip_x: false,
+                    grid_snap: false,
+                });
             }
         }
     }
@@ -267,16 +290,17 @@ fn player_movement_system(
     animation.0 = direction.length() > 0.1;
 
     let translation = &mut transform.translation;
-    *translation = *translation + direction.normalize_or_zero() * 250.0 * TIME_STEP;
+    *translation += direction.normalize_or_zero() * 250.0 * TIME_STEP;
 }
 
 fn setup_player(
-    mut commands: Commands, 
-    asset_server: Res<AssetServer>, 
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
     mut texture_atlases: ResMut<Assets<TextureAtlas>>,
 ) {
     let player_texture_handle = asset_server.load("player.png");
-    let player_texture_atlas = TextureAtlas::from_grid(player_texture_handle, Vec2::new(32.0, 32.0), 4, 1);
+    let player_texture_atlas =
+        TextureAtlas::from_grid(player_texture_handle, Vec2::new(32.0, 32.0), 4, 1);
     let player_texture_atlas_handle = texture_atlases.add(player_texture_atlas);
     let player_size = 32.0;
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
@@ -308,7 +332,7 @@ fn setup_player(
         })
         .insert(FollowTarget {
             target: Vec3::splat(0.0),
-            offset: Vec3::new(-player_size/2.0 * SCALE, 0.0, 0.0),
+            offset: Vec3::new(-player_size / 2.0 * SCALE, 0.0, 0.0),
             flip_x: false,
             grid_snap: true,
         })
@@ -327,7 +351,8 @@ fn setup_player(
         .insert(CollisionConfig {
             layer: CollisionLayer::Tools as u32,
             mask: 0,
-        });
+        })
+        .insert(PlantSeedTool);
 
     commands
         .spawn_bundle(SpriteBundle {
@@ -342,7 +367,8 @@ fn setup_player(
         .insert(CollisionConfig {
             layer: CollisionLayer::Tools as u32,
             mask: 0,
-        });
+        })
+        .insert(WaterPlantTool);
 }
 
 fn setup_crop_textures(
@@ -364,7 +390,8 @@ fn setup_tiles(
     windows: Res<Windows>,
 ) {
     let tiles_texture_handle = asset_server.load("tiles.png");
-    let tiles_texture_atlas = TextureAtlas::from_grid(tiles_texture_handle, Vec2::new(16.0, 16.0), 2, 2);
+    let tiles_texture_atlas =
+        TextureAtlas::from_grid(tiles_texture_handle, Vec2::new(16.0, 16.0), 2, 2);
     let tiles_texture_atlas_handle = texture_atlases.add(tiles_texture_atlas);
 
     let window = get_primary_window_size(windows);
@@ -389,34 +416,33 @@ fn setup_tiles(
                 2
             };
 
-            commands
-                .spawn_bundle(SpriteSheetBundle {
-                    texture_atlas: tiles_texture_atlas_handle.to_owned(),
-                    transform: Transform {
-                        translation: position,
-                        scale: Vec3::splat(SCALE),
-                        ..Default::default()
-                    },
-                    sprite: TextureAtlasSprite {
-                        index: sprite_id,
-                        ..Default::default()
-                    },
+            commands.spawn_bundle(SpriteSheetBundle {
+                texture_atlas: tiles_texture_atlas_handle.to_owned(),
+                transform: Transform {
+                    translation: position,
+                    scale: Vec3::splat(SCALE),
                     ..Default::default()
-                });
+                },
+                sprite: TextureAtlasSprite {
+                    index: sprite_id,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
         }
     }
 }
 
 fn get_primary_window_size(windows: Res<Windows>) -> Vec2 {
     let window = windows.get_primary().unwrap();
-    let window = Vec2::new(window.width() as f32, window.height() as f32);
-    window
+
+    Vec2::new(window.width() as f32, window.height() as f32)
 }
 
 fn pixel_to_tile_coord(pos: Vec3) -> Vec3 {
     let tile = pos / TILE_SIZE;
     let tile_pos = tile.floor() * TILE_SIZE;
-    return Vec3::new(tile_pos.x, tile_pos.y, pos.z);
+    Vec3::new(tile_pos.x, tile_pos.y, pos.z)
 }
 
 fn main() {
