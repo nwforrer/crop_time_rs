@@ -5,12 +5,26 @@ const SCALE: f32 = 3.0;
 const TILE_SIZE: f32 = SCALE * 16.0;
 const PLAYER_SIZE: f32 = SCALE * 32.0;
 
+const BACKGROUND_LAYER: f32 = 0.0;
+const OBJECTS_LAYER: f32 = 2.0;
+const PLAYER_LAYER: f32 = 5.0;
+
 pub struct GamePlugin;
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, StageLabel)]
+enum GameStage {
+    SetupActors,
+}
 
 enum CollisionLayer {
     Environment,
     Characters,
     Tools,
+}
+
+struct WindowSize {
+    w: f32,
+    h: f32,
 }
 
 #[derive(Component)]
@@ -65,9 +79,12 @@ impl Plugin for GamePlugin {
         app.insert_resource(TextureHandles {
             ..Default::default()
         })
-        .add_startup_system(setup_player)
-        .add_startup_system(setup_tiles)
-        .add_startup_system(setup_crop_textures)
+        .add_startup_system(setup_window_size)
+        .add_startup_stage(GameStage::SetupActors, SystemStage::parallel())
+        .add_startup_system_to_stage(GameStage::SetupActors, setup_player)
+        .add_startup_system_to_stage(GameStage::SetupActors, setup_tiles)
+        .add_startup_system_to_stage(GameStage::SetupActors, setup_crop_textures)
+        .add_startup_system_to_stage(GameStage::SetupActors, setup_fences)
         .add_system(animate_sprite_system)
         .add_system(grow_system)
         .add_system(update_follow_system)
@@ -308,7 +325,7 @@ fn setup_player(
         .spawn_bundle(SpriteSheetBundle {
             texture_atlas: player_texture_atlas_handle,
             transform: Transform {
-                translation: Vec3::new(0.0, 0.0, 5.0),
+                translation: Vec3::new(0.0, 0.0, PLAYER_LAYER),
                 scale: Vec3::splat(SCALE),
                 ..Default::default()
             },
@@ -343,7 +360,7 @@ fn setup_player(
             texture: asset_server.load("flower_seed_bag.png"),
             transform: Transform {
                 scale: Vec3::splat(SCALE),
-                translation: Vec3::new(-200.0, 0.0, 1.0),
+                translation: Vec3::new(-200.0, 0.0, OBJECTS_LAYER),
                 ..Default::default()
             },
             ..Default::default()
@@ -359,7 +376,7 @@ fn setup_player(
             texture: asset_server.load("watering_can.png"),
             transform: Transform {
                 scale: Vec3::splat(SCALE),
-                translation: Vec3::new(200.0, 0.0, 1.0),
+                translation: Vec3::new(200.0, 0.0, OBJECTS_LAYER),
                 ..Default::default()
             },
             ..Default::default()
@@ -383,29 +400,121 @@ fn setup_crop_textures(
     texture_handles.crops = texture_atlas_handle;
 }
 
+fn setup_fences(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut texture_atlases: ResMut<Assets<TextureAtlas>>,
+    window_size: Res<WindowSize>,
+) {
+    let texture_handle = asset_server.load("fence.png");
+    let texture_atlas = TextureAtlas::from_grid(texture_handle, Vec2::new(16.0, 16.0), 3, 1);
+    let texture_atlas_handle = texture_atlases.add(texture_atlas);
+
+    let columns = (window_size.w / TILE_SIZE) as i32;
+    let rows = (window_size.h / TILE_SIZE) as i32;
+    let top_row = window_size.h / 2.0 - 16.0 * SCALE / 2.0;
+    let bottom_row = -window_size.h / 2.0 + 16.0 * SCALE / 2.0;
+    let left_col = -window_size.w / 2.0 + 16.0 * SCALE;
+    let right_col = window_size.w / 2.0 - 16.0 * SCALE;
+    // corners
+    for (x, y, z, flip) in [
+        (left_col, top_row, OBJECTS_LAYER, true),
+        (right_col, top_row, OBJECTS_LAYER, false),
+        (left_col, bottom_row, PLAYER_LAYER+1.0, true),
+        (right_col, bottom_row, PLAYER_LAYER+1.0, false),
+    ] {
+        commands
+            .spawn_bundle(SpriteSheetBundle {
+                texture_atlas: texture_atlas_handle.to_owned(),
+                transform: Transform {
+                    translation: Vec3::new(x, y, z), // z is used to z-sort the fence corners correctly
+                    scale: Vec3::splat(SCALE),
+                    ..Default::default()
+                },
+                sprite: TextureAtlasSprite {
+                    index: 2,
+                    flip_x: flip,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .insert(CollisionConfig {
+                layer: CollisionLayer::Environment as u32,
+                mask: 0,
+            });
+    }
+
+    // top and bottom rows
+    for (row, z) in [(top_row, OBJECTS_LAYER), (bottom_row, PLAYER_LAYER+1.0)] {
+        for column in 2..columns - 1 {
+            let x = column as f32 * TILE_SIZE - window_size.w / 2.0;
+            commands
+                .spawn_bundle(SpriteSheetBundle {
+                    texture_atlas: texture_atlas_handle.to_owned(),
+                    transform: Transform {
+                        translation: Vec3::new(x, row, z),
+                        scale: Vec3::splat(SCALE),
+                        ..Default::default()
+                    },
+                    sprite: TextureAtlasSprite {
+                        index: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .insert(CollisionConfig {
+                    layer: CollisionLayer::Environment as u32,
+                    mask: 0,
+                });
+        }
+    }
+    // left and right columns
+    for row in 1..rows {
+        for column in [left_col, right_col] {
+            let y = row as f32 * TILE_SIZE - window_size.h / 2.0;
+            commands
+                .spawn_bundle(SpriteSheetBundle {
+                    texture_atlas: texture_atlas_handle.to_owned(),
+                    transform: Transform {
+                        translation: Vec3::new(column, y, OBJECTS_LAYER),
+                        scale: Vec3::splat(SCALE),
+                        ..Default::default()
+                    },
+                    sprite: TextureAtlasSprite {
+                        index: 0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .insert(CollisionConfig {
+                    layer: CollisionLayer::Environment as u32,
+                    mask: 0,
+                });
+        }
+    }
+}
+
 fn setup_tiles(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut texture_atlases: ResMut<Assets<TextureAtlas>>,
-    windows: Res<Windows>,
+    window_size: Res<WindowSize>,
 ) {
     let tiles_texture_handle = asset_server.load("tiles.png");
     let tiles_texture_atlas =
         TextureAtlas::from_grid(tiles_texture_handle, Vec2::new(16.0, 16.0), 2, 2);
     let tiles_texture_atlas_handle = texture_atlases.add(tiles_texture_atlas);
 
-    let window = get_primary_window_size(windows);
-
-    let columns = (window.x / TILE_SIZE) as i32 + 2;
-    let rows = (window.y / TILE_SIZE) as i32 + 2;
+    let columns = (window_size.w / TILE_SIZE) as i32 + 2;
+    let rows = (window_size.h / TILE_SIZE) as i32 + 2;
     let between = Uniform::from(0..100);
     let mut rng = rand::thread_rng();
     for row in 0..rows {
         for column in 0..columns {
             let position = Vec3::new(
-                column as f32 * TILE_SIZE - window.x / 2.0,
-                row as f32 * TILE_SIZE - window.y / 2.0,
-                0.0,
+                column as f32 * TILE_SIZE - window_size.w / 2.0,
+                row as f32 * TILE_SIZE - window_size.h / 2.0,
+                BACKGROUND_LAYER,
             );
             let sprite_id = between.sample(&mut rng);
             let sprite_id = if sprite_id < 95 {
@@ -433,10 +542,13 @@ fn setup_tiles(
     }
 }
 
-fn get_primary_window_size(windows: Res<Windows>) -> Vec2 {
+fn setup_window_size(mut commands: Commands, windows: Res<Windows>) {
     let window = windows.get_primary().unwrap();
 
-    Vec2::new(window.width() as f32, window.height() as f32)
+    commands.insert_resource(WindowSize {
+        w: window.width(),
+        h: window.height(),
+    });
 }
 
 fn pixel_to_tile_coord(pos: Vec3) -> Vec3 {
